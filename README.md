@@ -6,6 +6,30 @@ Found a bug? [Open a bug report.](https://github.com/Supreeeme/xwayland-satellit
 
 Need help troubleshooting, or have some other general question? [Ask on GitHub Discussions.](https://github.com/Supreeeme/xwayland-satellite/discussions)
 
+## What's new in this fork
+
+Original repo: [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite)
+
+This fork carries general X11/Wayland compatibility fixes for the niri/anland environment. None of these fixes check an application name or contain application-specific behavior.
+
+  ### Output geometry synchronization
+
+  When a `wl_output.mode` event marks a mode as `CURRENT`, satellite now updates `OutputDimensions` and resends the rotation-aware `xdg_output.logical_size` before forwarding `wl_output.done`.
+
+  This fixes stale Xwayland root-screen geometry after output resize, rotation, or fullscreen transitions, which could otherwise cause pointer clicks to be offset or rejected. The conversion is shared by normal and 90-degree-rotated outputs and covered by a unit test.
+
+  ### Legacy KGSL dmabuf modifier compatibility
+
+  Satellite normalizes the legacy bare KGSL UBWC modifier `0x4fa` to `DRM_FORMAT_MOD_QCOM_COMPRESSED` (`0x0500000000000001`) while forwarding linux-dmabuf planes. Other modifiers are preserved unchanged.
+
+  This is protocol/format-based and applies to all X11 clients. The installed Xwayland binary also carries the same normalization at its GBM import boundary, because some clients fail before satellite receives the buffer.
+
+  ### Diagnostics and validation
+
+  Top level configure changes and scaled pointer coordinates will log to `/tmp/xwayland-satellite-debug.log`.
+
+  The `cargo test --lib` passes all 83 library tests, including output-geometry and modifier-normalization regressions.
+
 ## Dependencies
 - Xwayland >=23.1
 - xcb

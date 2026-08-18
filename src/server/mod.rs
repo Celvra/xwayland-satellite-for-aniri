@@ -99,6 +99,43 @@ where
     u32::from(wenum).try_into().unwrap()
 }
 
+/// Normalize the legacy modifier emitted by some KGSL DRI3 clients.
+///
+/// Older Android/Qualcomm userspace encoded UBWC as the bare value `0x4fa`,
+/// while the Wayland dmabuf protocol uses the namespaced DRM modifier value.
+/// Keeping this translation in the Xwayland bridge makes the resulting
+/// `wl_buffer` consistent for its entire lifetime. Other modifiers, including
+/// all native Wayland buffers, are left untouched.
+fn normalize_legacy_dmabuf_modifier(modifier: u64) -> u64 {
+    const LEGACY_KGSL_QCOM_COMPRESSED: u64 = 0x4fa;
+    const DRM_FORMAT_MOD_QCOM_COMPRESSED: u64 = 0x0500_0000_0000_0001;
+
+    match modifier {
+        LEGACY_KGSL_QCOM_COMPRESSED => DRM_FORMAT_MOD_QCOM_COMPRESSED,
+        modifier => modifier,
+    }
+}
+
+#[cfg(test)]
+mod dmabuf_modifier_tests {
+    use super::normalize_legacy_dmabuf_modifier;
+
+    #[test]
+    fn translates_legacy_kgsl_qcom_modifier() {
+        assert_eq!(
+            normalize_legacy_dmabuf_modifier(0x4fa),
+            0x0500_0000_0000_0001
+        );
+    }
+
+    #[test]
+    fn preserves_standard_and_unknown_modifiers() {
+        for modifier in [0, 1, 0x0500_0000_0000_0001, u64::MAX] {
+            assert_eq!(normalize_legacy_dmabuf_modifier(modifier), modifier);
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 struct WindowAttributes {
     acquire_input_via_wm: bool,
@@ -1127,6 +1164,12 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
                 popup.popup.reposition(&popup.positioner, 0);
             }
             SurfaceRole::Toplevel(Some(_)) => {
+                log::info!(
+                    "RECONFIGURE toplevel {:?}: dims {dims:?} old attrs {:?} scale {}",
+                    event.window(),
+                    win.attrs.dims,
+                    scale_factor.0
+                );
                 win.attrs.dims.width = dims.width;
                 win.attrs.dims.height = dims.height;
                 drop(query);

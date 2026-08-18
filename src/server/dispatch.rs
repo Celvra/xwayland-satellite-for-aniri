@@ -644,13 +644,20 @@ impl<S: X11Selection>
                 modifier_hi,
                 modifier_lo,
             } => {
+                let original_modifier = (u64::from(modifier_hi) << 32) | u64::from(modifier_lo);
+                let modifier = super::normalize_legacy_dmabuf_modifier(original_modifier);
+                if modifier != original_modifier {
+                    log::info!(
+                        "normalizing legacy DRI3 dmabuf modifier 0x{original_modifier:x} to 0x{modifier:x}"
+                    );
+                }
                 c_params.add(
                     fd.as_fd(),
                     plane_idx,
                     offset,
                     stride,
-                    modifier_hi,
-                    modifier_lo,
+                    (modifier >> 32) as u32,
+                    modifier as u32,
                 );
             }
             Destroy => {

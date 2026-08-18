@@ -1,9 +1,16 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 fn main() {
-    pretty_env_logger::formatted_timed_builder()
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/xwayland-satellite-debug.log")
+        .expect("could not open debug log file");
+    env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
+        .format_timestamp_millis()
         .init();
     xwayland_satellite::main(parse_args());
 }

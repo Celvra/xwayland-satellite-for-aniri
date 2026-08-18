@@ -5,7 +5,7 @@ use hecs::{CommandBuffer, World};
 use log::{debug, error, trace, warn};
 use macros::simple_event_shunt;
 use std::os::fd::AsFd;
-use wayland_client::{Proxy, protocol as client};
+use wayland_client::{protocol as client, Proxy};
 use wayland_protocols::{
     wp::{
         fractional_scale::v1::client::wp_fractional_scale_v1,
@@ -337,6 +337,10 @@ impl SurfaceEvents {
                 width,
                 height,
             };
+            log::info!(
+                "CONFIGURE-APPLY toplevel {window:?}: pending {pending:?} scale {} -> x={x} y={y} w={width} h={height}",
+                scale_factor.0
+            );
             let pending = PendingSurfaceState {
                 x,
                 y,
@@ -736,15 +740,28 @@ impl Event for client::wl_pointer::Event {
                         return;
                     }
                 }
+                let win_pos = state
+                    .world
+                    .query_one::<(&x::Window, &WindowData)>(target)
+                    .ok()
+                    .and_then(|mut q| q.get().map(|(_, d)| d.attrs.dims))
+                    .unwrap_or_default();
                 let (server, scale) = state
                     .world
                     .query_one_mut::<(&WlPointer, &SurfaceScaleFactor)>(target)
                     .unwrap();
-                trace!(
+                log::info!(
                     target: "pointer_position",
-                    "pointer motion {} {}",
+                    "pointer motion surface=({surface_x},{surface_y}) scale={} winsize=({},{}) win_xy=({},{}) sent=({}, {}) root=({}, {})",
+                    scale.0,
+                    win_pos.width,
+                    win_pos.height,
+                    win_pos.x,
+                    win_pos.y,
                     surface_x * scale.0,
-                    surface_y * scale.0
+                    surface_y * scale.0,
+                    surface_x * scale.0 + f64::from(win_pos.x),
+                    surface_y * scale.0 + f64::from(win_pos.y)
                 );
                 server.motion(time, surface_x * scale.0, surface_y * scale.0);
             }
@@ -1066,6 +1083,37 @@ pub(super) struct OutputDimensions {
     rotated_90: bool,
 }
 
+/// Xwayland uses the output's physical mode extent for its rootless X screen.
+/// The compositor's xdg-output event carries a logical (scaled) extent, so the
+/// satellite has historically converted it back to the mode dimensions here.
+/// Keep that conversion in one place so a mode update can refresh the value
+/// after the wl_output and xdg-output events arrive in either order.
+fn xwayland_logical_size(dimensions: &OutputDimensions) -> (i32, i32) {
+    if dimensions.rotated_90 {
+        (dimensions.height, dimensions.width)
+    } else {
+        (dimensions.width, dimensions.height)
+    }
+}
+
+#[cfg(test)]
+mod output_size_tests {
+    use super::{xwayland_logical_size, OutputDimensions};
+
+    #[test]
+    fn mode_extent_is_preserved_for_normal_and_rotated_outputs() {
+        let mut dimensions = OutputDimensions {
+            width: 1080,
+            height: 1920,
+            ..Default::default()
+        };
+        assert_eq!(xwayland_logical_size(&dimensions), (1080, 1920));
+
+        dimensions.rotated_90 = true;
+        assert_eq!(xwayland_logical_size(&dimensions), (1920, 1080));
+    }
+}
+
 impl Default for OutputDimensions {
     fn default() -> Self {
         Self {
@@ -1317,10 +1365,11 @@ impl OutputEvent {
                 height,
                 refresh,
             } => {
-                let Ok((output, dimensions)) = state
-                    .world
-                    .query_one_mut::<(&WlOutput, &mut OutputDimensions)>(target)
-                else {
+                let Ok((output, dimensions, xdg)) = state.world.query_one_mut::<(
+                    &WlOutput,
+                    &mut OutputDimensions,
+                    Option<&XdgOutputServer>,
+                )>(target) else {
                     return;
                 };
 
@@ -1331,6 +1380,17 @@ impl OutputEvent {
                     dimensions.width = width;
                     dimensions.height = height;
                     debug!("{} dimensions: {width}x{height}", output.id());
+
+                    // Smithay sends xdg_output.logical_size before wl_output.mode.
+                    // At that point OutputDimensions still contains the previous
+                    // mode, so the old implementation echoed a stale size back to
+                    // Xwayland. Refresh it after recording the new mode and before
+                    // forwarding wl_output.done; otherwise Xwayland can keep the
+                    // previous root-screen geometry after fullscreen/rotation.
+                    if let Some(xdg) = xdg {
+                        let (logical_width, logical_height) = xwayland_logical_size(dimensions);
+                        xdg.logical_size(logical_width, logical_height);
+                    }
                 }
                 output.mode(convert_wenum(flags), width, height, refresh);
             }
@@ -1395,11 +1455,8 @@ impl OutputEvent {
                 else {
                     return;
                 };
-                if dimensions.rotated_90 {
-                    xdg.logical_size(dimensions.height, dimensions.width);
-                } else {
-                    xdg.logical_size(dimensions.width, dimensions.height);
-                }
+                let (width, height) = xwayland_logical_size(dimensions);
+                xdg.logical_size(width, height);
             }
             _ => simple_event_shunt! {
                 state.world.get::<&XdgOutputServer>(target).unwrap(),
